@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
    Get free key: https://aistudio.google.com/app/apikey  (no credit card!)
    ══════════════════════════════════════════════════════════════════════════ */
 async function ai(prompt, key) {
-  if (!key) return "⚠️ Add your free Gemini API key in Settings to enable AI!";
+  if (!key || key === "") return "⚠️ Add your free Gemini API key in Settings to enable AI!";
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
@@ -18,40 +18,86 @@ async function ai(prompt, key) {
       }
     );
     const d = await res.json();
-    if (d.error) return "AI error: " + d.error.message;
-    return d.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
-  } catch { return "Network error. Check your key and connection."; }
+    if (d.error) {
+      console.error("AI error:", d.error);
+      return "AI error: " + d.error.message;
+    }
+    if (!d.candidates || d.candidates.length === 0) {
+      return "No response from AI. Check your API key.";
+    }
+    return d.candidates[0]?.content?.parts[0]?.text || "No response.";
+  } catch (error) {
+    console.error("Network error:", error);
+    return "Network error. Check your connection and API key.";
+  }
 }
 
 async function aiChat(history, key) {
-  if (!key) return "⚠️ Add your free Gemini API key in Settings to chat!";
+  if (!key || key === "") return "⚠️ Add your free Gemini API key in Settings to chat!";
   try {
-    const contents = history.map(m => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
+    // Format messages for Gemini
+    const contents = [];
+    
+    // Add system instruction as first user message for context
+    contents.push({
+      role: "user",
+      parts: [{ text: "You are StudyBot, a friendly AI tutor. Be concise, encouraging, helpful with any academic topic. Respond naturally without asterisks or markdown." }]
+    });
+    
+    // Add the conversation history
+    history.forEach(m => {
+      contents.push({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }]
+      });
+    });
+
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: "You are StudyBot, a friendly AI tutor. Be concise, encouraging, helpful with any academic topic." }] },
           contents,
-          generationConfig: { temperature: 0.8, maxOutputTokens: 1000 },
+          generationConfig: { 
+            temperature: 0.8, 
+            maxOutputTokens: 1000,
+            topK: 40,
+            topP: 0.95
+          },
         }),
       }
     );
     const d = await res.json();
-    if (d.error) return "AI error: " + d.error.message;
-    return d.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
-  } catch { return "Network error. Check your key."; }
+    if (d.error) {
+      console.error("AI chat error:", d.error);
+      return "AI error: " + d.error.message;
+    }
+    if (!d.candidates || d.candidates.length === 0) {
+      return "No response from AI. Check your API key.";
+    }
+    return d.candidates[0]?.content?.parts[0]?.text || "No response.";
+  } catch (error) {
+    console.error("Network error in chat:", error);
+    return "Network error. Check your connection and API key.";
+  }
 }
 
 /* ═══ STORAGE ════════════════════════════════════════════════════════════════ */
 const LS = {
-  get: (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  get: (k, d) => { 
+    try { 
+      const v = localStorage.getItem(k); 
+      return v ? JSON.parse(v) : d; 
+    } catch { 
+      return d; 
+    }
+  },
+  set: (k, v) => { 
+    try { 
+      localStorage.setItem(k, JSON.stringify(v)); 
+    } catch {} 
+  },
 };
 
 /* ═══ HELPERS ════════════════════════════════════════════════════════════════ */
@@ -232,7 +278,23 @@ function Home({user,sessions,transactions,notes,streak,budget,apiKey,t}){
   sessions.forEach(s=>{const d=new Date(s.date),now=new Date(),df=Math.floor((now-d)/86400000);if(df<7){let dw=d.getDay();dw=dw===0?6:dw-1;wk[dw]+=s.duration/3600;}});
   const maxW=Math.max(...wk,0.1);
   const recent=[...notes].sort((a,b)=>b.updated-a.updated).slice(0,3);
-  const getTip=()=>{setTipLoad(true);setTip("");ai("Give one surprising actionable study tip. 2 sentences max. No asterisks.",apiKey).then(r=>{setTip(r);setTipLoad(false);});};
+  const getTip=()=>{
+    if (!apiKey) {
+      toast("Add your Gemini API key in Settings first!");
+      return;
+    }
+    setTipLoad(true);
+    setTip("");
+    ai("Give one surprising actionable study tip. 2 sentences max. No asterisks or markdown.", apiKey)
+      .then(r => {
+        setTip(r);
+        setTipLoad(false);
+      })
+      .catch(err => {
+        setTip("Error getting tip. Check your API key.");
+        setTipLoad(false);
+      });
+  };
   return(
     <div style={{paddingBottom:16}}>
       <div style={{padding:"22px 18px 6px",display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
@@ -261,591 +323,4 @@ function Home({user,sessions,transactions,notes,streak,budget,apiKey,t}){
           {budget.monthly>0&&<div style={{background:G2,borderRadius:50,height:5,overflow:"hidden"}}><div style={{height:"100%",borderRadius:50,width:bpct+"%",background:bpct>80?"linear-gradient(90deg,#f59e0b,#ef4444)":`linear-gradient(90deg,${GRN},${t.acc})`,transition:"width 1s"}}/></div>}
         </Card>
         <Card style={{gridColumn:"1/-1",background:t.acc+"10",borderColor:t.acc+"35"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <div style={{fontSize:11,fontWeight:700,color:t.acc2,textTransform:"uppercase",letterSpacing:0.8}}>✦ AI Tip</div>
-            <button onClick={getTip} disabled={tipLoad} style={{background:t.acc+"22",border:`1px solid ${t.acc}44`,color:t.acc2,borderRadius:50,padding:"4px 12px",fontSize:11,fontWeight:700,cursor:tipLoad?"not-allowed":"pointer",opacity:tipLoad?0.5:1}}>{tipLoad?"…":"Get Tip"}</button>
-          </div>
-          {tipLoad?<div style={{display:"flex",gap:10,alignItems:"center",color:TX2,fontSize:13}}><Spin t={t}/> Thinking…</div>
-          :tip?<div style={{fontSize:14,lineHeight:1.75}}>{tip}</div>
-          :<div style={{fontSize:13,color:TX2}}>{apiKey?"Tap Get Tip!":"Add your free Gemini key in Settings → AI Key to enable."}</div>}
-        </Card>
-        <Card style={{gridColumn:"1/-1"}}>
-          <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:14}}>This Week 📊</div>
-          <div style={{display:"flex",alignItems:"flex-end",gap:6,height:80}}>
-            {wk.map((h,i)=>(
-              <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:5}}>
-                <div style={{width:"100%",borderRadius:6,background:h>0?`linear-gradient(180deg,${t.acc},${t.acc}44)`:G2,height:Math.max(4,(h/maxW)*68),transition:"height 1s cubic-bezier(0.34,1.56,0.64,1)"}}/>
-                <div style={{fontSize:10,color:TX3,fontWeight:600}}>{"MTWTFSS"[i]}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-        {recent.length>0&&(
-          <Card style={{gridColumn:"1/-1"}}>
-            <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:12}}>Recent Notes 📝</div>
-            {recent.map((n,i)=>(
-              <div key={n.id} style={{display:"flex",alignItems:"center",gap:12,padding:"9px 0",borderBottom:i<recent.length-1?"1px solid "+B1:"none"}}>
-                <div style={{width:8,height:8,borderRadius:"50%",background:t.acc,flexShrink:0}}/>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{n.title||"Untitled"}</div>
-                  <div style={{fontSize:11,color:TX2,marginTop:2}}>{n.subject||"No subject"} · {timeAgo(n.updated)}</div>
-                </div>
-              </div>
-            ))}
-          </Card>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ═══ STUDY ══════════════════════════════════════════════════════════════════ */
-function Study({sessions,onAdd,apiKey,t}){
-  const [mode,setMode]=useState("pomo"),[rem,setRem]=useState(25*60),[tot,setTot]=useState(25*60);
-  const [run,setRun]=useState(false),[sub,setSub]=useState("");
-  const [mood,setMood]=useState(false),[pDur,setPDur]=useState(0);
-  const [aiRes,setAiRes]=useState(""),[aiLoad,setAiLoad]=useState(false);
-  const iv=useRef(null);
-  const MODES={pomo:{dur:25*60,lbl:"FOCUS 🍅"},sht:{dur:10*60,lbl:"SHORT ⚡"},free:{dur:0,lbl:"FREE ⏱"}};
-  const sw=m=>{clearInterval(iv.current);setRun(false);setMood(false);const d=MODES[m].dur;setMode(m);setRem(d);setTot(d);};
-  const startTimer=()=>{setRun(true);setMood(false);iv.current=setInterval(()=>setRem(r=>{if(mode==="free")return r+1;if(r<=1){clearInterval(iv.current);setRun(false);doneFn(tot);return 0;}return r-1;}),1000);};
-  const pause=()=>{clearInterval(iv.current);setRun(false);};
-  const reset=()=>{clearInterval(iv.current);setRun(false);setMood(false);const d=MODES[mode].dur;setRem(d);setTot(d);};
-  const doneFn=dur=>{setPDur(dur||rem);setMood(true);beep();confetti();};
-  const logMood=m=>{onAdd({id:uid(),subject:sub.trim()||"General",duration:pDur,date:new Date().toISOString(),mood:m});setMood(false);toast("✅ "+fmtDur(pDur)+" logged!");};
-  const R=88,circ=2*Math.PI*R,pct=tot>0?(mode==="free"?(rem%3600)/3600:rem/tot):0;
-  const mm=String(Math.floor(rem/60)).padStart(2,"0"),ss=String(rem%60).padStart(2,"0");
-  const analyze=async()=>{
-    if(sessions.length<2){toast("Log at least 2 sessions first!");return;}
-    setAiLoad(true);setAiRes("");
-    const data=sessions.slice(-14).map(s=>new Date(s.date).toLocaleDateString("en",{weekday:"short"})+": "+s.subject+" "+Math.round(s.duration/60)+"min mood:"+s.mood+"/5").join(", ");
-    const r=await ai("Analyze student study sessions. Give 3 bullet insights with emojis. No asterisks. Sessions: "+data,apiKey);
-    setAiRes(r);setAiLoad(false);
-  };
-  return(
-    <div style={{paddingBottom:16}}>
-      <div style={{padding:"20px 18px 8px",fontFamily:"'Syne',sans-serif",fontSize:26,fontWeight:800}}>Study <span style={{color:t.acc2}}>Timer</span></div>
-      <div style={{display:"flex",gap:6,margin:"0 16px 14px",padding:4,background:G1,borderRadius:50,border:"1px solid "+B1}}>
-        {[["pomo","🍅 Pomodoro"],["sht","⚡ Short"],["free","⏱ Free"]].map(([m,lb])=>(
-          <button key={m} onClick={()=>sw(m)} style={{flex:1,padding:"8px 0",borderRadius:50,fontSize:12,fontWeight:700,border:"none",cursor:"pointer",background:mode===m?t.acc:"none",color:mode===m?"#fff":TX2,boxShadow:mode===m?`0 2px 12px ${t.glow}`:"none",transition:"all 0.2s"}}>{lb}</button>
-        ))}
-      </div>
-      <div style={{padding:"0 16px 14px"}}>
-        <input value={sub} onChange={e=>setSub(e.target.value)} placeholder="📚 What are you studying?" style={{width:"100%",background:G1,border:"1px solid "+B1,borderRadius:50,padding:"11px 20px",color:TX,fontSize:14,outline:"none"}} onFocus={e=>e.target.style.borderColor=t.acc} onBlur={e=>e.target.style.borderColor=B1}/>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"4px 0 14px"}}>
-        <div style={{position:"relative",width:200,height:200,marginBottom:18}}>
-          <svg width="200" height="200" style={{transform:"rotate(-90deg)"}}>
-            <circle cx="100" cy="100" r={R} fill="none" stroke={G2} strokeWidth={8}/>
-            <circle cx="100" cy="100" r={R} fill="none" stroke={t.acc} strokeWidth={8} strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ*(1-pct)} style={{filter:`drop-shadow(0 0 8px ${t.acc})`,transition:"stroke-dashoffset 1s linear"}}/>
-          </svg>
-          <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-            <div style={{fontFamily:"'Syne',sans-serif",fontSize:44,fontWeight:800,letterSpacing:-2}}>{mm}:{ss}</div>
-            <div style={{fontSize:10,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:2,marginTop:2}}>{MODES[mode].lbl}</div>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:14,alignItems:"center"}}>
-          <button onClick={reset} style={{width:50,height:50,borderRadius:"50%",background:G2,border:"1px solid "+B1,color:TX2,fontSize:22,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>↺</button>
-          <button onClick={run?pause:startTimer} style={{width:70,height:70,borderRadius:"50%",background:`linear-gradient(135deg,${t.acc},${t.acc}99)`,border:"none",color:"#fff",fontSize:28,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",boxShadow:`0 6px 28px ${t.glow}`}}>{run?"⏸":"▶"}</button>
-          <button onClick={()=>{if(run)doneFn(tot-rem);}} style={{width:50,height:50,borderRadius:"50%",background:G2,border:"1px solid "+B1,color:TX2,fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>⏭</button>
-        </div>
-        {mood&&(
-          <div style={{marginTop:22,textAlign:"center",animation:"popIn 0.4s ease"}}>
-            <div style={{fontSize:13,color:TX2,marginBottom:12}}>How was that session?</div>
-            <div style={{display:"flex",gap:14,fontSize:30}}>
-              {["😫","😕","😐","😊","🤩"].map((e,i)=><span key={i} onClick={()=>logMood(i+1)} style={{cursor:"pointer",display:"inline-block",transition:"transform 0.2s"}} onMouseEnter={ev=>ev.target.style.transform="scale(1.3)"} onMouseLeave={ev=>ev.target.style.transform="scale(1)"}>{e}</span>)}
-            </div>
-          </div>
-        )}
-      </div>
-      <div style={{padding:"0 16px 10px"}}>
-        <Btn variant="ghost" style={{width:"100%",marginBottom:10}} onClick={analyze} disabled={aiLoad} t={t}>{aiLoad?<><Spin t={t}/> Analyzing…</>:"✦ AI Pattern Analysis"}</Btn>
-        {aiRes&&<Card style={{background:t.acc+"10",borderColor:t.acc+"35",fontSize:14,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{aiRes}</Card>}
-      </div>
-      <div style={{padding:"4px 16px 0"}}>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Session Log</div>
-        {sessions.length===0?<Empty em="⏰" title="No sessions yet" sub="Start the timer and log your first session!"/>:
-          [...sessions].reverse().slice(0,15).map(s=>(
-            <div key={s.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",background:G1,border:"1px solid "+B1,borderRadius:14,marginBottom:8}}>
-              <div style={{width:10,height:10,borderRadius:"50%",background:hueOf(s.subject),flexShrink:0}}/>
-              <div style={{flex:1}}>
-                <div style={{fontSize:14,fontWeight:600}}>{s.subject}</div>
-                <div style={{fontSize:11,color:TX2,marginTop:2}}>{new Date(s.date).toLocaleDateString()} · {"⭐".repeat(s.mood||3)}</div>
-              </div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:700,color:t.acc2}}>{fmtDur(s.duration)}</div>
-            </div>
-          ))
-        }
-      </div>
-    </div>
-  );
-}
-
-/* ═══ MONEY ══════════════════════════════════════════════════════════════════ */
-function Money({transactions,budget,onAddTxn,onDelTxn,onSetBudget,apiKey,t}){
-  const [addOpen,setAddOpen]=useState(false),[budOpen,setBudOpen]=useState(false);
-  const [roast,setRoast]=useState(""),[roastLoad,setRoastLoad]=useState(false);
-  const [form,setForm]=useState({type:"expense",amount:"",desc:"",cat:"Food",emoji:"🍕"});
-  const [budF,setBudF]=useState({monthly:budget.monthly||"",currency:budget.currency||"$"});
-  const CATS=[["🍕","Food"],["📚","Books"],["🚌","Transport"],["🎮","Entertainment"],["🏠","Housing"],["💊","Health"],["🛒","Shopping"],["☕","Coffee"],["💰","Other"]];
-  const c=budget.currency||"$";
-  const totalInc=transactions.filter(tx=>tx.type==="income").reduce((a,tx)=>a+tx.amount,0);
-  const totalExp=transactions.filter(tx=>tx.type==="expense").reduce((a,tx)=>a+tx.amount,0);
-  const monthExp=transactions.filter(tx=>tx.type==="expense"&&isMo(tx.date)).reduce((a,tx)=>a+tx.amount,0);
-  const bal=totalInc-totalExp, bpct=budget.monthly>0?Math.min(100,(monthExp/budget.monthly)*100):0;
-  const catMap={};transactions.filter(tx=>tx.type==="expense").forEach(tx=>{const k=tx.emoji+" "+tx.cat;catMap[k]=(catMap[k]||0)+tx.amount;});
-  const catRows=Object.entries(catMap).sort((a,b)=>b[1]-a[1]).slice(0,5),maxCat=Math.max(...catRows.map(r=>r[1]),1);
-  const submit=()=>{const amt=parseFloat(form.amount);if(!amt||amt<=0){toast("Enter a valid amount");return;}onAddTxn({id:uid(),...form,amount:amt,date:new Date().toISOString()});setAddOpen(false);setForm({type:"expense",amount:"",desc:"",cat:"Food",emoji:"🍕"});toast("Added ✅");};
-  const doRoast=async()=>{
-    const exp=transactions.filter(tx=>tx.type==="expense"&&isMo(tx.date));
-    if(exp.length<2){toast("Add more expenses first!");return;}
-    setRoastLoad(true);setRoast("");
-    const data=exp.map(tx=>tx.cat+": "+c+tx.amount).join(", ");
-    const r=await ai(`Roast this student's spending in 3 funny sentences then give 2 real tips. No asterisks. Budget: ${c}${budget.monthly||"unknown"} Spending: ${data}`,apiKey);
-    setRoast(r);setRoastLoad(false);
-  };
-  return(
-    <div style={{paddingBottom:16}}>
-      <div style={{padding:"20px 18px 8px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{fontFamily:"'Syne',sans-serif",fontSize:26,fontWeight:800}}>Money <span style={{color:t.acc2}}>Tracker</span></div>
-        <Btn size="sm" onClick={()=>setAddOpen(true)} t={t}>+ Add</Btn>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,padding:"0 14px 14px"}}>
-        {[["Income",c+totalInc.toFixed(2),GRN],["Spent",c+totalExp.toFixed(2),RED],["Balance",c+Math.abs(bal).toFixed(2),bal>=0?GRN:"#ef4444"]].map(([l,v,col])=>(
-          <Card key={l} style={{textAlign:"center",padding:"14px 8px"}}>
-            <div style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:800,color:col}}>{v}</div>
-            <div style={{fontSize:10,color:TX2,fontWeight:700,textTransform:"uppercase",marginTop:3}}>{l}</div>
-          </Card>
-        ))}
-      </div>
-      <div style={{padding:"0 14px 14px"}}>
-        <Card>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <div style={{fontSize:13,fontWeight:600}}>Monthly Budget</div>
-            <button onClick={()=>setBudOpen(true)} style={{background:"none",border:"none",color:t.acc2,fontSize:12,fontWeight:700,cursor:"pointer"}}>Edit</button>
-          </div>
-          {budget.monthly>0?(
-            <div>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
-                <span style={{fontSize:13,color:TX2}}>{c}{monthExp.toFixed(2)} of {c}{budget.monthly}</span>
-                <span style={{fontSize:12,fontWeight:700,color:bpct>80?"#ef4444":bpct>50?YEL:GRN}}>{bpct.toFixed(0)}%</span>
-              </div>
-              <div style={{background:G2,borderRadius:50,height:7,overflow:"hidden"}}><div style={{height:"100%",borderRadius:50,width:bpct+"%",background:bpct>80?"linear-gradient(90deg,#f59e0b,#ef4444)":`linear-gradient(90deg,${GRN},${t.acc})`,transition:"width 1s"}}/></div>
-            </div>
-          ):<div style={{fontSize:13,color:TX2}}>Tap <b style={{color:t.acc2}}>Edit</b> to set a budget</div>}
-        </Card>
-      </div>
-      {catRows.length>0&&(
-        <div style={{padding:"0 14px 14px"}}>
-          <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>By Category</div>
-          <Card>{catRows.map(([k,v])=>(
-            <div key={k} style={{marginBottom:12}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><span style={{fontSize:13}}>{k}</span><span style={{fontSize:13,fontWeight:700,color:RED}}>{c}{v.toFixed(2)}</span></div>
-              <div style={{background:G2,borderRadius:50,height:5,overflow:"hidden"}}><div style={{height:"100%",borderRadius:50,width:(v/maxCat*100)+"%",background:`linear-gradient(90deg,${t.acc},${RED})`,transition:"width 1s"}}/></div>
-            </div>
-          ))}</Card>
-        </div>
-      )}
-      <div style={{padding:"0 14px 14px"}}>
-        <Btn variant="ghost" style={{width:"100%",background:"rgba(244,114,182,0.08)",borderColor:"rgba(244,114,182,0.3)",color:RED}} onClick={doRoast} disabled={roastLoad} t={t}>
-          {roastLoad?<><Spin t={t}/> Roasting…</>:"🔥 Roast My Spending"}
-        </Btn>
-        {roast&&<Card style={{marginTop:10,background:"rgba(244,114,182,0.06)",borderColor:"rgba(244,114,182,0.2)",fontSize:14,lineHeight:1.75,whiteSpace:"pre-wrap"}}>{roast}</Card>}
-      </div>
-      <div style={{padding:"0 14px"}}>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Transactions</div>
-        {transactions.length===0?<Empty em="💸" title="No transactions" sub="Add your first expense or income"/>:
-          [...transactions].reverse().map(tx=>(
-            <div key={tx.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",background:G1,border:"1px solid "+B1,borderRadius:14,marginBottom:8}}>
-              <div style={{width:42,height:42,borderRadius:12,background:G2,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>{tx.emoji||"💰"}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tx.desc||tx.cat}</div>
-                <div style={{fontSize:11,color:TX2,marginTop:2}}>{tx.cat} · {new Date(tx.date).toLocaleDateString()}</div>
-              </div>
-              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
-                <div style={{fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,color:tx.type==="income"?GRN:RED}}>{tx.type==="income"?"+":"-"}{c}{tx.amount.toFixed(2)}</div>
-                <button onClick={()=>{onDelTxn(tx.id);toast("Deleted 🗑");}} style={{background:"none",border:"none",color:TX3,fontSize:11,cursor:"pointer"}}>✕</button>
-              </div>
-            </div>
-          ))
-        }
-      </div>
-      <Sheet open={addOpen} onClose={()=>setAddOpen(false)} title="Add Transaction" bg2={t.bg2}>
-        <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {["expense","income"].map(tp=>(
-            <button key={tp} onClick={()=>setForm(f=>({...f,type:tp}))} style={{flex:1,padding:"11px 0",borderRadius:12,border:`1px solid ${form.type===tp?(tp==="expense"?"rgba(244,114,182,0.5)":"rgba(52,211,153,0.5)"):B1}`,background:form.type===tp?(tp==="expense"?"rgba(244,114,182,0.12)":"rgba(52,211,153,0.12)"):G1,color:form.type===tp?(tp==="expense"?RED:GRN):TX2,fontWeight:700,fontSize:13,cursor:"pointer"}}>
-              {tp==="expense"?"− Expense":"+ Income"}
-            </button>
-          ))}
-        </div>
-        <Field label="Amount" type="number" placeholder="0.00" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} t={t}/>
-        <Field label="Description" placeholder="e.g. Lunch" value={form.desc} onChange={e=>setForm(f=>({...f,desc:e.target.value}))} t={t}/>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:8}}>Category</div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:18}}>
-          {CATS.map(([em,nm])=><button key={nm} onClick={()=>setForm(f=>({...f,cat:nm,emoji:em}))} style={{padding:"7px 12px",borderRadius:50,fontSize:12,fontWeight:600,border:`1px solid ${form.cat===nm?t.acc:B1}`,background:form.cat===nm?t.acc+"28":G1,color:form.cat===nm?t.acc2:TX2,cursor:"pointer"}}>{em} {nm}</button>)}
-        </div>
-        <Btn style={{width:"100%"}} onClick={submit} t={t}>Add Transaction</Btn>
-      </Sheet>
-      <Sheet open={budOpen} onClose={()=>setBudOpen(false)} title="Set Budget" bg2={t.bg2}>
-        <div style={{marginBottom:14}}>
-          <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:"0.8px",marginBottom:6}}>Currency</div>
-          <select value={budF.currency} onChange={e=>setBudF(f=>({...f,currency:e.target.value}))} style={{width:"100%",background:G1,border:"1px solid "+B1,borderRadius:12,padding:"12px 16px",color:TX,fontSize:14,outline:"none"}}>
-            {["$","€","£","₹","¥","₦","R"].map(cv=><option key={cv} value={cv} style={{background:t.bg2}}>{cv}</option>)}
-          </select>
-        </div>
-        <Field label="Monthly Budget" type="number" placeholder="e.g. 500" value={budF.monthly} onChange={e=>setBudF(f=>({...f,monthly:e.target.value}))} t={t}/>
-        <Btn style={{width:"100%"}} onClick={()=>{onSetBudget({monthly:parseFloat(budF.monthly)||0,currency:budF.currency});setBudOpen(false);toast("Saved 💰");}} t={t}>Save</Btn>
-      </Sheet>
-    </div>
-  );
-}
-
-/* ═══ NOTE EDITOR ════════════════════════════════════════════════════════════ */
-function NoteEditor({note,onSave,onClose,apiKey,t}){
-  const [title,setTitle]=useState(note.title||"");
-  const [subject,setSubject]=useState(note.subject||"");
-  const [color,setColor]=useState(note.color||"violet");
-  const [aiPanel,setAiPanel]=useState(null),[aiLoad,setAiLoad]=useState(false);
-  const [quiz,setQuiz]=useState(null),[fc,setFc]=useState(null),[fcI,setFcI]=useState(0),[fcFlip,setFcFlip]=useState(false);
-  const edRef=useRef(null),saveT=useRef(null);
-  const get=()=>edRef.current?edRef.current.innerHTML:"";
-  const autoSave=()=>{clearTimeout(saveT.current);saveT.current=setTimeout(()=>onSave({...note,title,subject,color,content:get(),updated:Date.now()}),1800);};
-  const cmd=c=>{document.execCommand(c,false,null);edRef.current?.focus();};
-  const blk=b=>{document.execCommand("formatBlock",false,b);edRef.current?.focus();};
-  const COLORS={violet:"#7c3aed",coral:"#f472b6",lime:"#34d399",gold:"#fbbf24"};
-  const save=()=>{clearTimeout(saveT.current);onSave({...note,title,subject,color,content:get(),updated:Date.now()});};
-  const doAi=async action=>{
-    const txt=strip(get());if(txt.length<15){toast("Write some content first!");return;}
-    setAiLoad(true);setAiPanel(null);setQuiz(null);setFc(null);
-    try{
-      if(action==="summarize"){const r=await ai("Summarize in 5 bullet points starting with •. No asterisks:\n\n"+txt,apiKey);setAiPanel({content:r});}
-      else if(action==="explain"){const r=await ai("Explain simply for a 16-year-old. No asterisks:\n\n"+txt.slice(0,1500),apiKey);setAiPanel({content:r});}
-      else if(action==="expand"){const r=await ai("Expand with more detail. No asterisks:\n\n"+txt.slice(0,1500),apiKey);if(edRef.current)edRef.current.innerHTML+=`<br><hr style='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0'><strong style='color:${t.acc2}'>✦ Expanded</strong><br><br>`+r.replace(/\n/g,"<br>");autoSave();toast("Expanded ✅");}
-      else if(action==="grammar"){const r=await ai("Fix grammar only. Return ONLY corrected text:\n\n"+txt,apiKey);if(edRef.current)edRef.current.innerHTML=r.replace(/\n/g,"<br>");autoSave();toast("Fixed ✓");}
-      else if(action==="quiz"){const raw=await ai('Create 5 MCQs. Return ONLY valid JSON array: [{"q":"...","options":["A","B","C","D"],"answer":0}]\n\nContent:\n'+txt.slice(0,2000),apiKey);const qs=JSON.parse(raw.replace(/```json|```/g,"").trim());setQuiz({qs,i:0,score:0,sel:null,done:false,answered:false});}
-      else if(action==="flashcards"){const raw=await ai('Create 6 flashcards. Return ONLY valid JSON array: [{"front":"term","back":"definition"}]\n\nContent:\n'+txt.slice(0,2000),apiKey);const cards=JSON.parse(raw.replace(/```json|```/g,"").trim());setFc(cards);setFcI(0);setFcFlip(false);}
-    }catch{toast("AI error — check your Gemini key in Settings");}
-    setAiLoad(false);
-  };
-  const ansQ=idx=>{if(!quiz||quiz.answered)return;setQuiz(q=>({...q,answered:true,sel:idx,score:q.score+(idx===q.qs[q.i].answer?1:0)}));};
-  const nextQ=()=>{const ni=quiz.i+1;if(ni>=quiz.qs.length){setQuiz(q=>({...q,done:true}));if(quiz.score+(quiz.sel===quiz.qs[quiz.i].answer?1:0)>=4)confetti();}else setQuiz(q=>({...q,i:ni,sel:null,answered:false}));};
-  return(
-    <div style={{position:"fixed",inset:0,background:t.bg,zIndex:300,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-      <div style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"1px solid "+B1,flexShrink:0}}>
-        <button onClick={()=>{save();onClose();}} style={{background:"none",border:"none",color:TX2,cursor:"pointer",padding:4,display:"flex"}}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
-        <input value={title} onChange={e=>{setTitle(e.target.value);autoSave();}} placeholder="Note title…" style={{flex:1,background:"none",border:"none",fontFamily:"'Syne',sans-serif",fontSize:18,fontWeight:800,color:TX,outline:"none"}}/>
-        <Btn size="sm" onClick={()=>{save();toast("Saved ✅");}} t={t}>Save</Btn>
-      </div>
-      <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 14px",borderBottom:"1px solid "+B1,flexShrink:0}}>
-        <input value={subject} onChange={e=>setSubject(e.target.value)} placeholder="Subject…" style={{flex:1,background:G1,border:"1px solid "+B1,borderRadius:50,padding:"7px 14px",color:TX,fontSize:12,outline:"none"}}/>
-        <div style={{display:"flex",gap:8}}>{Object.entries(COLORS).map(([k,v])=><div key={k} onClick={()=>setColor(k)} style={{width:22,height:22,borderRadius:"50%",background:v,cursor:"pointer",border:`2px solid ${color===k?TX:"transparent"}`,transform:color===k?"scale(1.25)":"scale(1)",transition:"all 0.2s"}}/>)}</div>
-      </div>
-      <div style={{display:"flex",gap:5,padding:"8px 12px",borderBottom:"1px solid "+B1,overflowX:"auto",scrollbarWidth:"none",flexShrink:0,background:t.bg2}}>
-        {[["B","bold"],["I","italic"],["U","underline"]].map(([l,c])=><button key={c} onClick={()=>cmd(c)} style={{width:32,height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX2,fontWeight:700,fontSize:13,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={c==="italic"?{fontStyle:"italic"}:c==="underline"?{textDecoration:"underline"}:{fontWeight:"bold"}}>{l}</span></button>)}
-        {[["H1","h1"],["H2","h2"]].map(([l,b])=><button key={b} onClick={()=>blk(b)} style={{padding:"0 9px",height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX2,fontWeight:700,fontSize:11,cursor:"pointer",flexShrink:0}}>{l}</button>)}
-        <button onClick={()=>cmd("insertUnorderedList")} style={{width:32,height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX2,fontSize:18,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>•</button>
-        <button onClick={()=>cmd("insertOrderedList")} style={{width:32,height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX2,fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>1.</button>
-        <button onClick={()=>blk("blockquote")} style={{width:32,height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX2,fontSize:16,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>❝</button>
-        <button onClick={()=>cmd("removeFormat")} style={{width:32,height:32,borderRadius:7,background:"none",border:"1px solid "+B1,color:TX3,fontSize:13,cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-      </div>
-      <div ref={edRef} contentEditable onInput={autoSave} style={{flex:1,padding:"18px",outline:"none",fontSize:15,lineHeight:1.85,color:TX,overflowY:"auto",minHeight:0}} dangerouslySetInnerHTML={{__html:note.content||""}} suppressContentEditableWarning/>
-      {(aiLoad||aiPanel||quiz||fc)&&(
-        <div style={{borderTop:"1px solid "+B1,padding:16,maxHeight:260,overflowY:"auto",background:t.bg2,flexShrink:0}}>
-          {aiLoad&&<div style={{display:"flex",gap:10,alignItems:"center",color:TX2,fontSize:13}}><Spin t={t}/> Working…</div>}
-          {aiPanel&&!quiz&&!fc&&(
-            <div>
-              <div style={{fontSize:13,lineHeight:1.75,whiteSpace:"pre-wrap",marginBottom:12}}>{aiPanel.content}</div>
-              <div style={{display:"flex",gap:8}}>
-                <Btn size="sm" onClick={()=>{if(edRef.current)edRef.current.innerHTML+=`<br><hr style='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0'><strong style='color:${t.acc2}'>✦ AI</strong><br><br>`+aiPanel.content.replace(/\n/g,"<br>");setAiPanel(null);autoSave();toast("Inserted ✅");}} t={t}>Insert</Btn>
-                <Btn size="sm" variant="ghost" onClick={()=>setAiPanel(null)} t={t}>Dismiss</Btn>
-              </div>
-            </div>
-          )}
-          {quiz&&!quiz.done&&(
-            <div>
-              <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Q{quiz.i+1}/{quiz.qs.length}</div>
-              <div style={{fontSize:15,fontWeight:700,marginBottom:14,lineHeight:1.4}}>{quiz.qs[quiz.i].q}</div>
-              {quiz.qs[quiz.i].options.map((opt,i)=>{
-                let bg=G1,border=B1,col=TX;
-                if(quiz.answered){if(i===quiz.qs[quiz.i].answer){bg="rgba(52,211,153,0.12)";border=GRN;col=GRN;}else if(i===quiz.sel){bg="rgba(239,68,68,0.12)";border="#ef4444";col="#ef4444";}}
-                return <div key={i} onClick={()=>ansQ(i)} style={{padding:"11px 14px",background:bg,border:"1px solid "+border,borderRadius:12,marginBottom:8,cursor:quiz.answered?"default":"pointer",fontSize:13,color:col}}>{String.fromCharCode(65+i)}. {opt}</div>;
-              })}
-              {quiz.answered&&<Btn size="sm" style={{marginTop:8}} onClick={nextQ} t={t}>Next →</Btn>}
-            </div>
-          )}
-          {quiz&&quiz.done&&(
-            <div style={{textAlign:"center",padding:"12px 0"}}>
-              <div style={{fontSize:38,marginBottom:8}}>{quiz.score>=4?"🏆":quiz.score>=3?"😊":"📖"}</div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:28,fontWeight:800,color:t.acc2}}>{Math.round((quiz.score/quiz.qs.length)*100)}%</div>
-              <div style={{fontSize:13,color:TX2,marginTop:4}}>{quiz.score}/{quiz.qs.length} correct</div>
-              <Btn size="sm" style={{marginTop:12}} onClick={()=>setQuiz(null)} t={t}>Done</Btn>
-            </div>
-          )}
-          {fc&&(
-            <div>
-              <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Card {fcI+1}/{fc.length} · Tap to flip</div>
-              <div onClick={()=>setFcFlip(f=>!f)} style={{height:150,perspective:1000,cursor:"pointer"}}>
-                <div style={{position:"relative",width:"100%",height:"100%",transformStyle:"preserve-3d",transition:"transform 0.5s cubic-bezier(0.34,1.56,0.64,1)",transform:fcFlip?"rotateY(180deg)":"none"}}>
-                  <div style={{position:"absolute",inset:0,backfaceVisibility:"hidden",background:t.acc+"18",border:`1px solid ${t.acc}44`,borderRadius:16,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:18,textAlign:"center"}}>
-                    <div style={{fontSize:10,color:TX3,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>TERM</div>
-                    <div style={{fontFamily:"'Syne',sans-serif",fontSize:17,fontWeight:700}}>{fc[fcI].front}</div>
-                  </div>
-                  <div style={{position:"absolute",inset:0,backfaceVisibility:"hidden",transform:"rotateY(180deg)",background:"rgba(52,211,153,0.08)",border:"1px solid rgba(52,211,153,0.3)",borderRadius:16,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:18,textAlign:"center"}}>
-                    <div style={{fontSize:10,color:TX3,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>DEFINITION</div>
-                    <div style={{fontSize:13,lineHeight:1.6}}>{fc[fcI].back}</div>
-                  </div>
-                </div>
-              </div>
-              <div style={{display:"flex",gap:10,marginTop:10}}>
-                <Btn size="sm" variant="ghost" onClick={()=>{if(fcI>0){setFcI(f=>f-1);setFcFlip(false);}}} t={t}>← Prev</Btn>
-                <Btn size="sm" onClick={()=>{if(fcI<fc.length-1){setFcI(f=>f+1);setFcFlip(false);}else{setFc(null);confetti();toast("Complete! 🎉");}}} t={t}>{fcI<fc.length-1?"Next →":"Done 🎉"}</Btn>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      <div style={{display:"flex",gap:6,padding:"10px 12px",borderTop:"1px solid "+B1,overflowX:"auto",scrollbarWidth:"none",flexShrink:0,background:t.bg}}>
-        {[["✦ Summarize","summarize"],["🧠 Quiz","quiz"],["🃏 Cards","flashcards"],["📝 Expand","expand"],["✓ Grammar","grammar"],["💡 Explain","explain"]].map(([lb,ac])=>(
-          <button key={ac} onClick={()=>doAi(ac)} disabled={aiLoad} style={{whiteSpace:"nowrap",padding:"7px 14px",borderRadius:50,fontSize:11,fontWeight:700,background:t.acc+"18",border:`1px solid ${t.acc}44`,color:t.acc2,cursor:aiLoad?"not-allowed":"pointer",flexShrink:0,opacity:aiLoad?0.5:1}}>{lb}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Notes({notes,onSave,apiKey,t}){
-  const [editing,setEditing]=useState(null),[search,setSearch]=useState("");
-  const ACCENT={violet:"#7c3aed",coral:"#f472b6",lime:"#34d399",gold:"#fbbf24"};
-  const filtered=[...notes].filter(n=>!search||(n.title||"").toLowerCase().includes(search.toLowerCase())||strip(n.content||"").toLowerCase().includes(search.toLowerCase())).sort((a,b)=>b.updated-a.updated);
-  if(editing)return <NoteEditor note={editing} onSave={n=>{onSave(n);setEditing(null);}} onClose={()=>setEditing(null)} apiKey={apiKey} t={t}/>;
-  return(
-    <div style={{paddingBottom:16}}>
-      <div style={{padding:"20px 18px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{fontFamily:"'Syne',sans-serif",fontSize:26,fontWeight:800}}>My <span style={{color:t.acc2}}>Notes</span></div>
-        <Btn size="sm" onClick={()=>setEditing({id:uid(),title:"",content:"",subject:"",color:"violet",updated:Date.now()})} t={t}>+ New</Btn>
-      </div>
-      <div style={{padding:"0 14px 14px"}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search notes…" style={{width:"100%",background:G1,border:"1px solid "+B1,borderRadius:50,padding:"11px 20px",color:TX,fontSize:14,outline:"none"}}/></div>
-      {filtered.length===0?<Empty em="📝" title={search?"No results":"No notes yet"} sub={search?"Try a different search":"Tap + New to create your first note"}/>:
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,padding:"0 14px"}}>
-          {filtered.map(n=>(
-            <div key={n.id} onClick={()=>setEditing({...n})} style={{background:G1,border:"1px solid "+B1,borderRadius:18,padding:16,cursor:"pointer",minHeight:140,display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",transition:"transform 0.2s,box-shadow 0.2s"}} onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-4px)";e.currentTarget.style.boxShadow="0 12px 40px rgba(0,0,0,0.4)";}} onMouseLeave={e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="";}}>
-              <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:ACCENT[n.color]||t.acc}}/>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,marginBottom:6,lineHeight:1.3}}>{n.title||"Untitled"}</div>
-              <div style={{fontSize:12,color:TX2,lineHeight:1.6,flex:1,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>{strip(n.content)||"Empty note…"}</div>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}>
-                <div style={{fontSize:10,color:TX3}}>{timeAgo(n.updated)}</div>
-                {n.subject&&<div style={{fontSize:10,fontWeight:700,color:t.acc2,background:t.acc+"20",padding:"2px 8px",borderRadius:20}}>{n.subject}</div>}
-              </div>
-            </div>
-          ))}
-        </div>
-      }
-    </div>
-  );
-}
-
-/* ═══ AI CHAT ════════════════════════════════════════════════════════════════ */
-function AiChat({user,apiKey,t}){
-  const [msgs,setMsgs]=useState([{role:"assistant",content:"Hey! I'm StudyBot 👋 Ask me anything — concepts, essays, math, study plans!"}]);
-  const [input,setInput]=useState(""),[load,setLoad]=useState(false);
-  const bottomRef=useRef(null);
-  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[msgs]);
-  const send=async text=>{
-    const msg=(text||input).trim();if(!msg)return;
-    setInput("");setLoad(true);
-    const newMsgs=[...msgs,{role:"user",content:msg}];
-    setMsgs(newMsgs);
-    const reply=await aiChat(newMsgs,apiKey).catch(()=>"Something went wrong 😅");
-    setMsgs(m=>[...m,{role:"assistant",content:reply}]);
-    setLoad(false);
-  };
-  const CHIPS=["💡 Explain a concept","✍️ Help with my essay","🔢 Solve math step by step","📅 Make a study plan","⚡ 5 productivity tips","🧠 Quiz me on a topic"];
-  return(
-    <div style={{display:"flex",flexDirection:"column",height:`calc(100vh - ${NAV}px)`,overflow:"hidden"}}>
-      <div style={{padding:"16px 18px",borderBottom:"1px solid "+B1,flexShrink:0}}>
-        <div style={{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:800}}>✦ StudyBot</div>
-        <div style={{fontSize:12,color:TX2,marginTop:2}}>Your AI study companion</div>
-      </div>
-      <div style={{display:"flex",gap:8,padding:"10px 12px",overflowX:"auto",scrollbarWidth:"none",flexShrink:0}}>
-        {CHIPS.map(c=>(
-          <button key={c} onClick={()=>send(c)} style={{whiteSpace:"nowrap",padding:"8px 14px",borderRadius:50,background:G1,border:"1px solid "+B1,color:TX2,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0,transition:"all 0.2s"}} onMouseEnter={e=>{e.currentTarget.style.background=t.acc+"22";e.currentTarget.style.borderColor=t.acc;e.currentTarget.style.color=t.acc2;}} onMouseLeave={e=>{e.currentTarget.style.background=G1;e.currentTarget.style.borderColor=B1;e.currentTarget.style.color=TX2;}}>{c}</button>
-        ))}
-      </div>
-      <div style={{flex:1,overflowY:"auto",padding:"10px 14px",display:"flex",flexDirection:"column",gap:12}}>
-        {msgs.map((m,i)=>(
-          <div key={i} style={{display:"flex",gap:10,flexDirection:m.role==="user"?"row-reverse":"row"}}>
-            <div style={{width:34,height:34,borderRadius:"50%",background:m.role==="assistant"?`linear-gradient(135deg,${t.acc},${t.acc}88)`:G2,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0,border:"1px solid "+B1}}>{m.role==="assistant"?"✦":(user.avatar||"👤")}</div>
-            <div style={{maxWidth:"80%",padding:"12px 16px",borderRadius:m.role==="assistant"?"4px 18px 18px 18px":"18px 4px 18px 18px",fontSize:14,lineHeight:1.7,background:m.role==="assistant"?G2:`linear-gradient(135deg,${t.acc},${t.acc}99)`,border:m.role==="assistant"?"1px solid "+B1:"none",color:"#fff",whiteSpace:"pre-wrap"}}>{m.content}</div>
-          </div>
-        ))}
-        {load&&(
-          <div style={{display:"flex",gap:10}}>
-            <div style={{width:34,height:34,borderRadius:"50%",background:`linear-gradient(135deg,${t.acc},${t.acc}88)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>✦</div>
-            <div style={{padding:"14px 18px",background:G2,border:"1px solid "+B1,borderRadius:"4px 18px 18px 18px",display:"flex",gap:5,alignItems:"center"}}>
-              {[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:"50%",background:t.acc2,animation:`bk3 1.2s ${i*0.2}s infinite`}}/>)}
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef}/>
-      </div>
-      <div style={{padding:"12px 14px",borderTop:"1px solid "+B1,display:"flex",gap:10,alignItems:"flex-end",flexShrink:0,background:t.bg}}>
-        <textarea value={input} rows={1} onChange={e=>{setInput(e.target.value);e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder="Ask anything…" style={{flex:1,background:G1,border:"1px solid "+B1,borderRadius:20,padding:"12px 16px",color:TX,fontSize:14,outline:"none",resize:"none",maxHeight:120,lineHeight:1.5}} onFocus={e=>e.target.style.borderColor=t.acc} onBlur={e=>e.target.style.borderColor=B1}/>
-        <button onClick={()=>send()} disabled={load||!input.trim()} style={{width:46,height:46,borderRadius:"50%",background:`linear-gradient(135deg,${t.acc},${t.acc}99)`,border:"none",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,boxShadow:`0 4px 16px ${t.glow}`,cursor:load||!input.trim()?"not-allowed":"pointer",opacity:load||!input.trim()?0.5:1}}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ═══ SETTINGS ═══════════════════════════════════════════════════════════════ */
-function Settings({user,onUpdateUser,onClearData,budget,apiKey,onApiKeyChange,onThemeChange,t}){
-  const [name,setName]=useState(user.name||"");
-  const [keyInput,setKeyInput]=useState(apiKey||"");
-  const [showKey,setShowKey]=useState(false);
-  const AVS=["🎓","🧑‍💻","🦊","🐼","🌟","🚀","🧠","🎯","🦁","🐉","🌈","⚡"];
-  const exportAll=()=>{
-    const data={user,sessions:LS.get("sv_sessions",[]),transactions:LS.get("sv_transactions",[]),notes:LS.get("sv_notes",[]),budget};
-    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
-    const a=document.createElement("a");a.href=url;a.download="studyvault-backup.json";a.click();URL.revokeObjectURL(url);
-    toast("Exported 📦");
-  };
-  return(
-    <div style={{paddingBottom:24}}>
-      <div style={{padding:"20px 18px 16px",fontFamily:"'Syne',sans-serif",fontSize:26,fontWeight:800}}>Settings</div>
-      <div style={{padding:"0 14px 16px"}}>
-        <Card>
-          <div style={{textAlign:"center",marginBottom:16}}>
-            <div style={{fontSize:54,marginBottom:8}}>{user.avatar||"🎓"}</div>
-            <div style={{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:800}}>{user.name}</div>
-            <div style={{fontSize:12,color:TX2,marginTop:4}}>{user.type}</div>
-          </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center",marginBottom:16}}>{AVS.map(a=><span key={a} onClick={()=>onUpdateUser({...user,avatar:a})} style={{fontSize:26,cursor:"pointer",opacity:user.avatar===a?1:0.35,transform:user.avatar===a?"scale(1.2)":"scale(1)",transition:"all 0.2s",display:"inline-block"}}>{a}</span>)}</div>
-          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Your name" style={{width:"100%",background:G1,border:"1px solid "+B1,borderRadius:12,padding:"11px 16px",color:TX,fontSize:14,outline:"none",marginBottom:12,textAlign:"center"}}/>
-          <div style={{textAlign:"center"}}><Btn size="sm" onClick={()=>{if(name.trim()){onUpdateUser({...user,name:name.trim()});toast("Saved ✅");}else toast("Enter a name!");}} t={t}>Save Profile</Btn></div>
-        </Card>
-      </div>
-
-      <div style={{padding:"0 14px 16px"}}>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>🤖 AI Key — Gemini (Free)</div>
-        <Card style={{background:t.acc+"0a",borderColor:t.acc+"30"}}>
-          <div style={{fontSize:13,color:TX2,marginBottom:14,lineHeight:1.7}}>
-            Get free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" style={{color:t.acc2,fontWeight:700}}>aistudio.google.com</a> — no credit card. Stored only on this device.
-          </div>
-          <div style={{position:"relative",marginBottom:12}}>
-            <input type={showKey?"text":"password"} value={keyInput} onChange={e=>setKeyInput(e.target.value)} placeholder="Paste key here (AIza…)" style={{width:"100%",background:G1,border:"1px solid "+B1,borderRadius:12,padding:"12px 42px 12px 16px",color:TX,fontSize:13,outline:"none",fontFamily:"monospace"}} onFocus={e=>{e.target.style.borderColor=t.acc;e.target.style.boxShadow=`0 0 0 3px ${t.glow}`;}} onBlur={e=>{e.target.style.borderColor=B1;e.target.style.boxShadow="none";}}/>
-            <button onClick={()=>setShowKey(s=>!s)} style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",color:TX2,cursor:"pointer",fontSize:15}}>{showKey?"🙈":"👁"}</button>
-          </div>
-          <div style={{display:"flex",gap:10,alignItems:"center"}}>
-            <Btn size="sm" onClick={()=>{onApiKeyChange(keyInput.trim());toast(keyInput.trim()?"Key saved 🔑":"Key removed");}} t={t}>Save Key</Btn>
-            {apiKey&&<span style={{fontSize:12,color:GRN,fontWeight:600}}>✓ Active</span>}
-          </div>
-        </Card>
-      </div>
-
-      <div style={{padding:"0 14px 16px"}}>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:12}}>🎨 Themes</div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-          {THEMES.map(th=>(
-            <div key={th.id} onClick={()=>{onThemeChange(th);toast(th.name+" applied! 🎨");}} style={{padding:"14px",background:th.id===t.id?th.acc+"18":G1,border:`2px solid ${th.id===t.id?th.acc:B1}`,borderRadius:16,cursor:"pointer",transition:"all 0.2s",position:"relative"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=th.acc;e.currentTarget.style.transform="translateY(-2px)";}} onMouseLeave={e=>{e.currentTarget.style.borderColor=th.id===t.id?th.acc:B1;e.currentTarget.style.transform="";}}>
-              {th.id===t.id&&<div style={{position:"absolute",top:8,right:8,width:8,height:8,borderRadius:"50%",background:th.acc,boxShadow:`0 0 8px ${th.acc}`}}/>}
-              <div style={{display:"flex",gap:5,marginBottom:9}}>
-                <div style={{width:26,height:16,borderRadius:5,background:th.acc,boxShadow:`0 2px 6px ${th.glow}`}}/>
-                <div style={{width:16,height:16,borderRadius:5,background:th.acc2}}/>
-                <div style={{width:16,height:16,borderRadius:5,background:th.bg,border:"1px solid rgba(255,255,255,0.2)"}}/>
-              </div>
-              <div style={{fontSize:12,fontWeight:700,color:TX}}>{th.name}</div>
-              <div style={{fontSize:10,color:TX2,marginTop:2}}>{th.desc}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={{padding:"0 14px 14px"}}>
-        <div style={{fontSize:11,fontWeight:700,color:TX2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Data</div>
-        {[
-          {icon:"📦",title:"Export All Data",sub:"Download as JSON backup",action:exportAll,danger:false},
-          {icon:"🗑",title:"Clear All Data",sub:"Permanently delete everything",action:()=>{if(window.confirm("Delete all data?"))onClearData();},danger:true},
-        ].map(item=>(
-          <div key={item.title} onClick={item.action} style={{display:"flex",alignItems:"center",gap:14,padding:16,background:G1,border:`1px solid ${item.danger?"rgba(239,68,68,0.22)":B1}`,borderRadius:14,marginBottom:10,cursor:"pointer",transition:"border-color 0.2s"}} onMouseEnter={e=>e.currentTarget.style.borderColor=item.danger?"#ef4444":B2} onMouseLeave={e=>e.currentTarget.style.borderColor=item.danger?"rgba(239,68,68,0.22)":B1}>
-            <div style={{width:40,height:40,borderRadius:12,background:item.danger?"rgba(239,68,68,0.1)":t.acc+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{item.icon}</div>
-            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:item.danger?"#ef4444":TX}}>{item.title}</div><div style={{fontSize:12,color:TX2,marginTop:2}}>{item.sub}</div></div>
-            <div style={{color:TX3,fontSize:20}}>›</div>
-          </div>
-        ))}
-      </div>
-      <div style={{textAlign:"center",padding:"6px 24px 4px",fontSize:13,color:TX2}}>Made with 💜 by <span style={{color:t.acc2,fontWeight:800,fontFamily:"'Syne',sans-serif"}}>Porte Boshi</span></div>
-      <div style={{textAlign:"center",fontSize:11,color:TX3,paddingBottom:4}}>StudyVault v2.0</div>
-    </div>
-  );
-}
-
-/* ═══ ROOT ═══════════════════════════════════════════════════════════════════ */
-export default function App(){
-  const [user,setUser]    =useState(()=>LS.get("sv_user",null));
-  const [tab,setTab]      =useState("home");
-  const [sessions,setSess]=useState(()=>LS.get("sv_sessions",[]));
-  const [txns,setTxns]    =useState(()=>LS.get("sv_transactions",[]));
-  const [notes,setNotes]  =useState(()=>LS.get("sv_notes",[]));
-  const [budget,setBudget]=useState(()=>LS.get("sv_budget",{monthly:0,currency:"$"}));
-  const [streak,setStreak]=useState(()=>LS.get("sv_streak",{current:0,lastDate:null}));
-  const [apiKey,setApiKey]=useState(()=>LS.get("sv_apikey",""));
-  const [theme,setTheme]  =useState(()=>{const id=LS.get("sv_theme","violet");return THEMES.find(x=>x.id===id)||THEMES[0];});
-
-  const t=theme;
-  const saveTheme =x=>{setTheme(x);LS.set("sv_theme",x.id);};
-  const saveKey   =k=>{setApiKey(k);LS.set("sv_apikey",k);};
-  const saveSess  =v=>{setSess(v);LS.set("sv_sessions",v);};
-  const saveTxns  =v=>{setTxns(v);LS.set("sv_transactions",v);};
-  const saveNotes =v=>{setNotes(v);LS.set("sv_notes",v);};
-  const saveBudget=v=>{setBudget(v);LS.set("sv_budget",v);};
-
-  const addSession=s=>{
-    saveSess([...sessions,s]);
-    const today=new Date().toDateString(),yest=new Date(Date.now()-86400000).toDateString(),ns={...streak};
-    if(ns.lastDate!==today){ns.current=ns.lastDate===yest?ns.current+1:1;ns.lastDate=today;}
-    setStreak(ns);LS.set("sv_streak",ns);
-  };
-  const saveNote=n=>{const next=notes.findIndex(x=>x.id===n.id)>=0?notes.map(x=>x.id===n.id?n:x):[...notes,n];saveNotes(next);};
-  const clearData=()=>{localStorage.clear();window.location.reload();};
-
-  const dynCss=BASE_CSS+`html,body{background:${t.bg}!important}`;
-
-  const NAV_ITEMS=[
-    {id:"home",   label:"Home",  icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>},
-    {id:"study",  label:"Study", icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>},
-    {id:"money",  label:"Money", icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>},
-    {id:"notes",  label:"Notes", icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>},
-    {id:"ai",     label:"AI",    icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>},
-    {id:"settings",label:"Me",   icon:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>},
-  ];
-
-  if(!user)return(<><style>{dynCss}</style><Toasts/><Onboard onDone={u=>{setUser(u);LS.set("sv_user",u);}} t={t}/></>);
-
-  const VIEW={
-    home:    <Home     user={user} sessions={sessions} transactions={txns} notes={notes} streak={streak} budget={budget} apiKey={apiKey} t={t}/>,
-    study:   <Study    sessions={sessions} onAdd={addSession} apiKey={apiKey} t={t}/>,
-    money:   <Money    transactions={txns} budget={budget} onAddTxn={tx=>saveTxns([...txns,tx])} onDelTxn={id=>saveTxns(txns.filter(tx=>tx.id!==id))} onSetBudget={saveBudget} apiKey={apiKey} t={t}/>,
-    notes:   <Notes    notes={notes} onSave={saveNote} apiKey={apiKey} t={t}/>,
-    ai:      <AiChat   user={user} apiKey={apiKey} t={t}/>,
-    settings:<Settings user={user} onUpdateUser={u=>{setUser(u);LS.set("sv_user",u);}} onClearData={clearData} budget={budget} apiKey={apiKey} onApiKeyChange={saveKey} onThemeChange={saveTheme} t={t}/>,
-  };
-
-  return(
-    <>
-      <style>{dynCss}</style>
-      <Toasts/>
-      <div style={{background:t.bg,minHeight:"100vh",paddingBottom:NAV}}>
-        <div key={tab} style={{animation:"fadeUp 0.35s ease"}}>{VIEW[tab]}</div>
-        <nav style={{position:"fixed",bottom:0,left:0,right:0,height:NAV,background:t.bg+"f0",backdropFilter:"blur(24px)",borderTop:"1px solid "+B1,display:"flex",alignItems:"center",justifyContent:"space-around",zIndex:200,paddingBottom:4}}>
-          {NAV_ITEMS.map(item=>(
-            <button key={item.id} onClick={()=>setTab(item.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"8px 2px",background:"none",border:"none",color:tab===item.id?t.acc2:TX3,cursor:"pointer",transition:"all 0.25s",borderRadius:12}}>
-              <div style={{transform:tab===item.id?"scale(1.15)":"scale(1)",transition:"all 0.25s",filter:tab===item.id?`drop-shadow(0 0 6px ${t.acc})`:"none"}}>{item.icon}</div>
-              <div style={{fontSize:10,fontWeight:tab===item.id?700:500,letterSpacing:0.3}}>{item.label}</div>
-            </button>
-          ))}
-        </nav>
-      </div>
-    </>
-  );
-}
+        
